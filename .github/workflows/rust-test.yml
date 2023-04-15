@@ -1,0 +1,73 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  merge_group:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust_ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: zsh
+          version: 1.0
+
+      - name: Install Rust (nightly)
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          components: rustfmt, clippy, llvm-tools-preview
+          override: true
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run cargo fmt
+        run: cargo +nightly fmt --all -- --check
+
+      - name: Run cargo clippy
+        run: >
+          cargo +nightly clippy --all-targets --all-features -- -D warnings -D clippy::cargo
+          -D clippy::complexity
+          -D clippy::nursery
+          -D clippy::perf
+          -D clippy::style
+          -D clippy::suspicious
+          -D clippy::pedantic
+          -A clippy::single_char_lifetime_names
+          -A clippy::cargo_common_metadata
+          -A clippy::items-after-statements
+          -A clippy::multiple_crate_versions
+          -A clippy::module_name_repetitions
+          -A clippy::missing_const_for_fn
+          -A clippy::single-match-else
+          -A clippy::match-bool
+
+      # - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@nextest
+
+      - name: Install cargo-llvm-cov
+        run: cargo install --git https://github.com/andrewgazelka/cargo-llvm-cov --branch codecov-improved-region cargo-llvm-cov
+
+      - name: Collect coverage data
+        run: cargo llvm-cov nextest --release --codecov --output-path codecov.json
+        env:
+          OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
+
+      - name: Upload coverage data to codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: codecov.json
+          fail_ci_if_error: true
