@@ -1,8 +1,9 @@
 [package]
-name = "openai"
-version = "1.0.0"
+name = "tokio-openai"
+version = "1.0.1"
 edition = "2021"
 description = "tokio support for OpenAI API"
+repository = "https://github.com/andrewgazelka/tokio-openai"
 license = "MIT"
 
 [dependencies]
