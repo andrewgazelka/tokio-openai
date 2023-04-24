@@ -541,7 +541,7 @@ impl Client {
     /// Returns `Err` if there is a network error communicating to `OpenAI`
     pub async fn stream_chat(
         &self,
-        req: ChatRequest,
+        req: impl Into<ChatRequest> + Send,
     ) -> anyhow::Result<impl Stream<Item = anyhow::Result<String>>> {
         #[derive(Serialize)]
         struct ChatStreamRequest {
@@ -560,6 +560,8 @@ impl Client {
         struct ChatStreamResponse {
             pub choices: Vec<ChatStreamMessage>,
         }
+
+        let req = req.into();
 
         let req = ChatStreamRequest { stream: true, req };
 
