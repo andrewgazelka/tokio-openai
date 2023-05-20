@@ -131,7 +131,7 @@ pub enum Model {
     Ada,
 }
 
-#[derive(Serialize, Deserialize, Default, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Default, Debug, PartialEq, Eq, Copy, Clone)]
 pub enum ChatModel {
     #[serde(rename = "gpt-4")]
     #[default]
@@ -221,7 +221,7 @@ const fn empty<T>(input: &[T]) -> bool {
     input.is_empty()
 }
 
-#[derive(Debug, Build, Serialize)]
+#[derive(Debug, Build, Serialize, Clone)]
 pub struct ChatRequest {
     pub model: ChatModel,
     pub messages: Vec<Msg>,
