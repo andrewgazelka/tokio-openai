@@ -66,6 +66,10 @@ pub trait OpenAiStreamExt: Stream<Item = anyhow::Result<String>> + Sized {
                     s.push(char);
                 }
             }
+
+            if !s.is_empty() {
+                let _ = tx.send(Ok(s)).await;
+            }
         });
 
         ReceiverStream::new(rx)
