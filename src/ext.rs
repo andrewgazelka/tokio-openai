@@ -71,3 +71,10 @@ pub trait OpenAiStreamExt: Stream<Item = anyhow::Result<String>> + Sized {
         ReceiverStream::new(rx)
     }
 }
+
+impl<T> OpenAiStreamExt for T
+where
+    T: Stream<Item = anyhow::Result<String>>,
+    T: Sized,
+{
+}
