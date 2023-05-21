@@ -9,12 +9,15 @@ use std::{
 use anyhow::{bail, Context};
 use derive_build::Build;
 use derive_more::Constructor;
+pub use ext::OpenAiStreamExt;
 use futures_util::{Stream, StreamExt, TryStreamExt};
 pub use reqwest;
 use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+
+mod ext;
 
 /// Grab the `OpenAI` key from the environment
 ///
