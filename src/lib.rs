@@ -16,12 +16,16 @@ pub use ext::OpenAiStreamExt;
 use futures_util::{Stream, StreamExt, TryStreamExt};
 pub use reqwest;
 use reqwest::Response;
+use schemars::JsonSchema;
 use serde::{de, de::Visitor, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
+use crate::util::schema;
+
 mod ext;
+mod util;
 struct StringOrStruct(Option<Value>);
 
 impl<'de> Visitor<'de> for StringOrStruct {
@@ -392,9 +396,20 @@ pub struct ChatChoice {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Function {
-    name: String,
-    description: Option<String>,
-    parameters: Option<serde_json::Value>,
+    pub name: String,
+    pub description: Option<String>,
+    pub parameters: Option<Value>,
+}
+
+impl Function {
+    pub fn new<Input: JsonSchema>(name: impl Into<String>, description: impl Into<String>) -> Self {
+        let schema = schema::<Input>();
+        Self {
+            name: name.into(),
+            description: Some(description.into()),
+            parameters: Some(schema),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
