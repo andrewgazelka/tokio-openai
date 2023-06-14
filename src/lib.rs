@@ -420,6 +420,12 @@ pub struct ChatResponse {
     pub choices: Vec<ChatChoice>,
 }
 
+impl ChatResponse {
+    pub fn take_first(self) -> Option<ChatChoice> {
+        self.choices.into_iter().next()
+    }
+}
+
 /// The text model we are using. See <https://openai.com/api/pricing/>
 #[derive(Deserialize, Serialize, Copy, Clone, Default, Eq, PartialEq, Debug)]
 #[allow(unused)]

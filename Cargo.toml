@@ -1,6 +1,6 @@
 [package]
 name = "tokio-openai"
-version = "2.0.1"
+version = "2.0.2"
 edition = "2021"
 description = "tokio support for OpenAI API"
 repository = "https://github.com/andrewgazelka/tokio-openai"
