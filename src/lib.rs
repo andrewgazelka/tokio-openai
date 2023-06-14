@@ -1,6 +1,9 @@
 #![allow(clippy::multiple_crate_versions)]
 //! API for `OpenAI`
 
+extern crate core;
+
+use core::fmt;
 use std::{
     fmt::{Display, Formatter},
     future::Future,
@@ -13,11 +16,43 @@ pub use ext::OpenAiStreamExt;
 use futures_util::{Stream, StreamExt, TryStreamExt};
 pub use reqwest;
 use reqwest::Response;
-use serde::{Deserialize, Serialize};
+use serde::{de, de::Visitor, Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 mod ext;
+struct StringOrStruct(Option<Value>);
+
+impl<'de> Visitor<'de> for StringOrStruct {
+    type Value = Option<Value>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("string or structure")
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        match serde_json::from_str(value) {
+            Ok(val) => Ok(Some(val)),
+            Err(_) => Err(E::custom("expected valid json in string format")),
+        }
+    }
+
+    fn visit_map<M>(self, visitor: M) -> Result<Self::Value, M::Error>
+    where
+        M: de::MapAccess<'de>,
+    {
+        let val = Value::deserialize(de::value::MapAccessDeserializer::new(visitor))?;
+        Ok(Some(val))
+    }
+}
+
+fn deserialize_arguments<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserializer.deserialize_any(StringOrStruct(None))
+}
 
 /// Grab the `OpenAI` key from the environment
 ///
@@ -136,8 +171,10 @@ pub enum Model {
 
 #[derive(Serialize, Deserialize, Default, Debug, PartialEq, Eq, Copy, Clone)]
 pub enum ChatModel {
-    #[serde(rename = "gpt-4")]
     #[default]
+    #[serde(rename = "gpt-4-0613")]
+    Gpt4_0613,
+    #[serde(rename = "gpt-4")]
     Gpt4,
     #[serde(rename = "gpt-3.5-turbo")]
     Turbo,
@@ -174,20 +211,39 @@ pub enum Role {
 pub struct Msg {
     /// Usually
     pub role: Role,
-    pub content: String,
+    pub content: Option<String>,
+
+    // #[serde(skip_serializing_if = "Option::is_none")]
+    // pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function_call: Option<FunctionCall>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FunctionCall {
+    pub name: String,
+
+    #[serde(deserialize_with = "deserialize_arguments")]
+    pub arguments: Option<Value>,
+}
+
+impl Default for Msg {
+    fn default() -> Self {
+        Self::system("")
+    }
 }
 
 impl Msg {
     pub fn system(content: impl Into<String>) -> Self {
-        Self::new(Role::System, content.into())
+        Self::new(Role::System, Some(content.into()), None)
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self::new(Role::User, content.into())
+        Self::new(Role::User, Some(content.into()), None)
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self::new(Role::Assistant, content.into())
+        Self::new(Role::Assistant, Some(content.into()), None)
     }
 }
 
@@ -201,7 +257,10 @@ pub enum Delta {
 
 impl Display for Msg {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.content)
+        match &self.content {
+            None => f.write_str(""),
+            Some(content) => f.write_str(content),
+        }
     }
 }
 
@@ -260,6 +319,9 @@ pub struct ChatRequest {
     /// if 0, then no limit
     #[serde(skip_serializing_if = "int_is_zero")]
     pub max_tokens: u32,
+
+    #[serde(skip_serializing_if = "empty")]
+    pub functions: Vec<Function>,
 }
 
 impl ChatRequest {
@@ -326,6 +388,13 @@ impl<const N: usize> From<[Msg; N]> for ChatRequest {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ChatChoice {
     pub message: Msg,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Function {
+    name: String,
+    description: Option<String>,
+    parameters: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -450,7 +519,7 @@ impl Client {
             .next()
             .context("no choices for chat")?;
 
-        Ok(choice.message.content)
+        choice.message.content.context("no content for chat")
     }
 
     /// # Errors
@@ -655,8 +724,9 @@ mod tests {
     use approx::relative_eq;
     use once_cell::sync::Lazy;
     use pretty_assertions::assert_eq;
+    use serde_json::json;
 
-    use crate::{ChatChoice, ChatModel, ChatRequest, Completions, Model, Msg, Role};
+    use crate::{ChatChoice, ChatModel, ChatRequest, Completions, Function, Model, Msg, Role};
 
     static API: Lazy<crate::Client> =
         Lazy::new(|| crate::Client::simple().expect("could not create client"));
@@ -668,12 +738,18 @@ mod tests {
             messages: vec![
                 Msg {
                     role: Role::System,
-                    content: "You are a helpful assistant that translates English to French."
-                        .to_string(),
+                    content: Some(
+                        "You are a helpful assistant that translates English to French."
+                            .to_string(),
+                    ),
+                    ..Msg::default()
                 },
                 Msg {
                     role: Role::User,
-                    content: "Translate the following English text to French: Hello".to_string(),
+                    content: Some(
+                        "Translate the following English text to French: Hello".to_string(),
+                    ),
+                    ..Msg::default()
                 },
             ],
             ..ChatRequest::default()
@@ -688,6 +764,8 @@ mod tests {
         let message = message
             // prune all non-alphanumeric characters
             .content
+            .as_ref()
+            .unwrap()
             .replace(|c: char| !c.is_ascii_alphanumeric(), "")
             .to_ascii_lowercase();
 
@@ -701,12 +779,18 @@ mod tests {
             messages: vec![
                 Msg {
                     role: Role::System,
-                    content: "You are a helpful assistant that translates English to French."
-                        .to_string(),
+                    content: Some(
+                        "You are a helpful assistant that translates English to French."
+                            .to_string(),
+                    ),
+                    ..Msg::default()
                 },
                 Msg {
                     role: Role::User,
-                    content: "Translate the following English text to French: Hello".to_string(),
+                    content: Some(
+                        "Translate the following English text to French: Hello".to_string(),
+                    ),
+                    ..Msg::default()
                 },
             ],
             ..ChatRequest::default()
@@ -777,31 +861,31 @@ mod tests {
     fn test_chat_from() {
         let req = ChatRequest::from("hello");
         assert_eq!(req.messages.len(), 1);
-        assert_eq!(req.messages[0].content, "hello");
+        assert_eq!(req.messages[0].content, Some("hello".to_string()));
         assert_eq!(req.messages[0].role, Role::User);
         assert_eq!(req.n, 1);
 
         let req = ChatRequest::from(&"hello".to_string());
         assert_eq!(req.messages.len(), 1);
-        assert_eq!(req.messages[0].content, "hello");
+        assert_eq!(req.messages[0].content, Some("hello".to_string()));
         assert_eq!(req.messages[0].role, Role::User);
         assert_eq!(req.n, 1);
 
         let messages = [Msg::user("hello"), Msg::assistant("world")];
         let req = ChatRequest::from(messages.as_slice());
         assert_eq!(req.messages.len(), 2);
-        assert_eq!(req.messages[0].content, "hello");
+        assert_eq!(req.messages[0].content, Some("hello".to_string()));
         assert_eq!(req.messages[0].role, Role::User);
-        assert_eq!(req.messages[1].content, "world");
+        assert_eq!(req.messages[1].content, Some("world".to_string()));
         assert_eq!(req.messages[1].role, Role::Assistant);
         assert_eq!(req.n, 1);
 
         let messages = [Msg::user("hello"), Msg::assistant("world")];
         let req = ChatRequest::from(messages);
         assert_eq!(req.messages.len(), 2);
-        assert_eq!(req.messages[0].content, "hello");
+        assert_eq!(req.messages[0].content, Some("hello".to_string()));
         assert_eq!(req.messages[0].role, Role::User);
-        assert_eq!(req.messages[1].content, "world");
+        assert_eq!(req.messages[1].content, Some("world".to_string()));
         assert_eq!(req.messages[1].role, Role::Assistant);
         assert_eq!(req.n, 1);
     }
@@ -836,5 +920,44 @@ mod tests {
         let model = Model::Ada;
         assert_eq!(model.embed_repr().unwrap(), "text-embedding-ada-002");
         assert_eq!(model.text_repr(), "text-ada-001");
+    }
+
+    #[tokio::test]
+    async fn test_function() {
+        let request = ChatRequest::new();
+
+        let function = Function {
+            name: "weather".to_string(),
+            description: Some("Get the weather for a location".to_string()),
+            parameters: Some(json!({
+                "type": "object",
+                "properties": {
+                        "lat": {
+                            "type": "number",
+                        },
+                        "lon": {
+                            "type": "number",
+                        },
+                        "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]},
+                    },
+                    "required": ["lat", "lon"],
+            })),
+        };
+
+        let request = request
+            .function(function)
+            .user_msg("What's the weather like in Svalbard");
+
+        println!("{}", serde_json::to_string_pretty(&request).unwrap());
+
+        let response = API.raw_chat(request).await.unwrap();
+
+        let first_choice = response.choices.into_iter().next().unwrap();
+
+        let msg = first_choice.message;
+
+        let call = serde_json::to_string_pretty(&msg.function_call).unwrap();
+
+        println!("call: {}", call);
     }
 }
