@@ -205,10 +205,12 @@ pub enum ChatModel {
     Eq
 )]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Role {
     System,
     User,
     Assistant,
+    Function,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Constructor)]
@@ -217,8 +219,9 @@ pub struct Msg {
     pub role: Role,
     pub content: Option<String>,
 
-    // #[serde(skip_serializing_if = "Option::is_none")]
-    // pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub function_call: Option<FunctionCall>,
 }
@@ -239,15 +242,23 @@ impl Default for Msg {
 
 impl Msg {
     pub fn system(content: impl Into<String>) -> Self {
-        Self::new(Role::System, Some(content.into()), None)
+        Self::new(Role::System, Some(content.into()), None, None)
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self::new(Role::User, Some(content.into()), None)
+        Self::new(Role::User, Some(content.into()), None, None)
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self::new(Role::Assistant, Some(content.into()), None)
+        Self::new(Role::Assistant, Some(content.into()), None, None)
+    }
+
+    pub fn function(name: impl Into<String>, content: impl Serialize) -> anyhow::Result<Self> {
+        let name = name.into();
+        let content = serde_json::to_value(content)?;
+        let content = serde_json::to_string(&content)?;
+
+        Ok(Self::new(Role::Function, Some(content), Some(name), None))
     }
 }
 
