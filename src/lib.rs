@@ -480,12 +480,12 @@ impl Client {
     fn request(
         &self,
         url: &str,
-        request: impl Serialize,
+        request: &impl Serialize,
     ) -> impl Future<Output = reqwest::Result<Response>> {
         self.client
             .post(url)
             .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&request)
+            .json(request)
             .send()
     }
 
@@ -502,7 +502,7 @@ impl Client {
         };
 
         let embed: EmbedResponse = self
-            .request("https://api.openai.com/v1/embeddings", request)
+            .request("https://api.openai.com/v1/embeddings", &request)
             .await
             .context("could not complete embed request")?
             .json()
@@ -520,7 +520,7 @@ impl Client {
 
     /// # Errors
     /// Returns `Err` if there is a network error communicating to `OpenAI`
-    pub async fn raw_chat(&self, req: ChatRequest) -> anyhow::Result<ChatResponse> {
+    pub async fn raw_chat(&self, req: &ChatRequest) -> anyhow::Result<ChatResponse> {
         let response: String = self
             .request("https://api.openai.com/v1/chat/completions", req)
             .await
@@ -544,7 +544,7 @@ impl Client {
     /// Returns `Err` if there is a network error communicating to `OpenAI`
     pub async fn chat(&self, req: impl Into<ChatRequest> + Send) -> anyhow::Result<String> {
         let req = req.into();
-        let response = self.raw_chat(req).await?;
+        let response = self.raw_chat(&req).await?;
         let choice = response
             .choices
             .into_iter()
@@ -581,7 +581,7 @@ impl Client {
         let req = TextStreamRequest { stream: true, req };
 
         let response = self
-            .request("https://api.openai.com/v1/completions", req)
+            .request("https://api.openai.com/v1/completions", &req)
             .await
             .context("could not complete chat request")?;
 
@@ -670,7 +670,7 @@ impl Client {
         let req = ChatStreamRequest { stream: true, req };
 
         let response = self
-            .request("https://api.openai.com/v1/chat/completions", req)
+            .request("https://api.openai.com/v1/chat/completions", &req)
             .await
             .context("could not complete chat request")?;
 
@@ -734,7 +734,7 @@ impl Client {
     /// Will return `Err` if cannot properly contact `OpenAI` API.
     pub async fn text(&self, request: TextRequest<'_>) -> anyhow::Result<Vec<String>> {
         let text = self
-            .request("https://api.openai.com/v1/completions", request)
+            .request("https://api.openai.com/v1/completions", &request)
             .await
             .context("could not complete text request")?
             .text()
@@ -787,7 +787,7 @@ mod tests {
             ..ChatRequest::default()
         };
 
-        let choices = API.raw_chat(req).await.unwrap().choices;
+        let choices = API.raw_chat(&req).await.unwrap().choices;
 
         let [ChatChoice { message }] = choices.as_slice() else {
             panic!("no choices");
@@ -982,7 +982,7 @@ mod tests {
 
         println!("{}", serde_json::to_string_pretty(&request).unwrap());
 
-        let response = API.raw_chat(request).await.unwrap();
+        let response = API.raw_chat(&request).await.unwrap();
 
         let first_choice = response.choices.into_iter().next().unwrap();
 
