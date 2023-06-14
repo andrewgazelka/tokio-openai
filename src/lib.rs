@@ -17,7 +17,11 @@ use futures_util::{Stream, StreamExt, TryStreamExt};
 pub use reqwest;
 use reqwest::Response;
 use schemars::JsonSchema;
-use serde::{de, de::Visitor, Deserialize, Deserializer, Serialize};
+use serde::{
+    de,
+    de::{DeserializeOwned, Visitor},
+    Deserialize, Deserializer, Serialize,
+};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -232,6 +236,14 @@ pub struct FunctionCall {
 
     #[serde(deserialize_with = "deserialize_arguments")]
     pub arguments: Option<Value>,
+}
+
+impl FunctionCall {
+    pub fn into_struct<T: DeserializeOwned>(self) -> anyhow::Result<T> {
+        let args = self.arguments.context("no arguments")?;
+        let res = serde_json::from_value(args).context("failed to deserialize arguments")?;
+        Ok(res)
+    }
 }
 
 impl Default for Msg {

@@ -1,5 +1,4 @@
-use schemars::gen::SchemaSettings;
-use schemars::JsonSchema;
+use schemars::{gen::SchemaSettings, JsonSchema};
 
 pub fn schema<T: JsonSchema>() -> serde_json::Value {
     let mut settings = SchemaSettings::default();
