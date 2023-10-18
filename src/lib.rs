@@ -68,7 +68,8 @@ where
 /// Will return `Err` if the key `OPENAI_KEY` does not exist
 #[inline]
 pub fn openai_key() -> anyhow::Result<String> {
-    std::env::var("OPENAI_KEY").context("no OpenAI key specified")
+    std::env::var("OPENAI_API_KEY")
+        .context("no OpenAI key specified. Set the variable OPENAI_API_KEY")
 }
 
 /// The `OpenAI` client
