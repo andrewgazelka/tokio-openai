@@ -29,6 +29,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::util::schema;
 
 mod ext;
+mod speech;
 mod util;
 struct StringOrStruct(Option<Value>);
 
@@ -76,22 +77,36 @@ pub fn openai_key() -> anyhow::Result<String> {
 #[derive(Clone)]
 pub struct Client {
     client: reqwest::Client,
-    api_key: String,
 }
 
 impl Client {
     /// Create a new [`Client`] client
-    #[must_use]
-    pub fn new(client: reqwest::Client, api_key: impl Into<String>) -> Self {
+    pub fn new(api_key: impl Into<String>) -> anyhow::Result<Self> {
         let api_key = api_key.into();
-        Self { client, api_key }
+
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", api_key)).unwrap(),
+        );
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+
+        // headers too
+        let client = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()?;
+
+        Ok(Self { client })
     }
 
     /// # Errors
     /// Will return `Err` if no `OpenAI` key is defined
     pub fn simple() -> anyhow::Result<Self> {
         let key = openai_key()?;
-        Ok(Self::new(reqwest::Client::default(), key))
+        Self::new(key)
     }
 }
 
@@ -502,11 +517,7 @@ impl Client {
         url: &str,
         request: &impl Serialize,
     ) -> impl Future<Output = reqwest::Result<Response>> {
-        self.client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(request)
-            .send()
+        self.client.post(url).json(request).send()
     }
 
     /// Calls the embedding API
