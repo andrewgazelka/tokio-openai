@@ -171,6 +171,16 @@ struct EmbedResponse {
     data: Vec<EmbedDataFrame>,
 }
 
+impl EmbedResponse {
+    fn into_embedding(self) -> Vec<f32> {
+        self.data
+            .into_iter()
+            .next()
+            .map(|e| e.embedding)
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct DavinciiData<'a> {
     model: &'a str,
@@ -492,6 +502,49 @@ pub enum Completions {
     Ada,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Embedding<'a>(&'a str);
+
+#[derive(Serialize, Build)]
+pub struct EmbeddingRequest<'a> {
+    #[required]
+    #[serde(skip)]
+    client: &'a Client,
+
+    input: &'a str,
+    model: Embedding<'a>,
+}
+
+impl<'a> EmbeddingRequest<'a> {
+    async fn send(self) -> anyhow::Result<Vec<f32>> {
+        let response = self
+            .client
+            .client
+            .post("https://api.openai.com/v1/embeddings")
+            .json(&self)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let embed: EmbedResponse = response.json().await?;
+
+        let result = embed.into_embedding();
+
+        Ok(result)
+    }
+}
+
+impl Embedding<'static> {
+    pub const LARGE: Self = Self("text-embedding-3-large");
+    pub const SMALL: Self = Self("text-embedding-3-small");
+}
+
+impl Default for Embedding<'static> {
+    fn default() -> Self {
+        Self::SMALL
+    }
+}
+
 impl Model {
     const fn embed_repr(self) -> Option<&'static str> {
         match self {
@@ -526,12 +579,7 @@ impl Client {
     ///
     /// # Errors
     /// Returns `Err` if there is a network error communicating to `OpenAI`
-    pub async fn embed(&self, input: &str) -> anyhow::Result<Vec<f32>> {
-        let request = EmbedRequest {
-            input,
-            model: unsafe { Model::Ada.embed_repr().unwrap_unchecked() },
-        };
-
+    pub async fn embed(&self, embedding: Embedding<'_>, input: &str) -> anyhow::Result<Vec<f32>> {
         let embed: EmbedResponse = self
             .request("https://api.openai.com/v1/embeddings", &request)
             .await
