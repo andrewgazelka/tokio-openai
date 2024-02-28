@@ -415,7 +415,7 @@ impl<'a> ChatRequest<'a> {
         let response: String = self
             .client
             .client
-            .get("https://api.openai.com/v1/chat/completions")
+            .post("https://api.openai.com/v1/chat/completions")
             .send()
             .await
             .context("could not complete chat request")?
