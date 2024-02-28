@@ -561,7 +561,7 @@ impl Embedding<'static> {
 
 impl Default for Embedding<'static> {
     fn default() -> Self {
-        Self::SMALL
+        Self::LARGE
     }
 }
 

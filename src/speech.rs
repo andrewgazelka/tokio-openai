@@ -13,7 +13,7 @@ impl Model<'static> {
 
 impl Default for Model<'static> {
     fn default() -> Self {
-        Self::TTS_1
+        Self::TTS_1_HD
     }
 }
 
