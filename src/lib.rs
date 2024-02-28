@@ -548,11 +548,11 @@ impl Model {
 }
 
 impl Client {
-    pub async fn embed(&self) -> EmbeddingRequest {
+    pub fn embed(&self) -> EmbeddingRequest {
         EmbeddingRequest::new(self)
     }
 
-    pub async fn chat(&self) -> ChatRequest {
+    pub fn chat(&self) -> ChatRequest {
         ChatRequest::new(self)
     }
 }
