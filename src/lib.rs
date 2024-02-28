@@ -4,18 +4,12 @@
 extern crate core;
 
 use core::fmt;
-use std::{
-    fmt::{Display, Formatter},
-    future::Future,
-};
+use std::fmt::{Display, Formatter};
 
-use anyhow::{bail, Context};
+use anyhow::Context;
 use derive_build::Build;
 use derive_more::Constructor;
-pub use ext::OpenAiStreamExt;
-use futures_util::{Stream, StreamExt, TryStreamExt};
 pub use reqwest;
-use reqwest::Response;
 use schemars::JsonSchema;
 use serde::{
     de,
@@ -23,15 +17,12 @@ use serde::{
     Deserialize, Deserializer, Serialize,
 };
 use serde_json::Value;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 
 use crate::util::schema;
 
-mod ext;
 mod speech;
 mod util;
-struct StringOrStruct(Option<Value>);
+pub struct StringOrStruct(pub Option<Value>);
 
 impl<'de> Visitor<'de> for StringOrStruct {
     type Value = Option<Value>;
@@ -343,10 +334,14 @@ const fn empty<T>(input: &[T]) -> bool {
     input.is_empty()
 }
 
-#[derive(Debug, Build, Serialize, Clone)]
-pub struct ChatRequest {
+#[derive(Build, Serialize)]
+pub struct ChatRequest<'a> {
     pub model: ChatModel,
     pub messages: Vec<Msg>,
+
+    #[serde(skip)]
+    #[required]
+    client: &'a Client,
 
     /// What sampling temperature to use, between 0 and 2. Higher values like 0.8 will make the
     /// output more random, while lower values like 0.2 will make it more focused and
@@ -384,7 +379,7 @@ pub struct ChatRequest {
     pub functions: Vec<Function>,
 }
 
-impl ChatRequest {
+impl<'a> ChatRequest<'a> {
     #[must_use]
     pub fn sys_msg(mut self, msg: impl Into<String>) -> Self {
         self.messages.push(Msg::system(msg));
@@ -402,46 +397,41 @@ impl ChatRequest {
         self.messages.push(Msg::assistant(msg));
         self
     }
-}
 
-impl Default for ChatRequest {
-    fn default() -> Self {
-        Self::new()
+    pub async fn send(self) -> anyhow::Result<String> {
+        let response = self.send_raw().await?;
+        let choice = response
+            .choices
+            .into_iter()
+            .next()
+            .context("no choices for chat")?;
+
+        choice.message.content.context("no content for chat")
     }
-}
 
-impl<'a> From<&'a str> for ChatRequest {
-    fn from(input: &'a str) -> Self {
-        Self {
-            messages: vec![Msg::user(input)],
-            ..Self::default()
-        }
-    }
-}
+    /// # Errors
+    /// Returns `Err` if there is a network error communicating to `OpenAI`
+    pub async fn send_raw(self) -> anyhow::Result<ChatResponse> {
+        let response: String = self
+            .client
+            .client
+            .get("https://api.openai.com/v1/chat/completions")
+            .send()
+            .await
+            .context("could not complete chat request")?
+            .text()
+            .await?;
 
-impl<'a> From<&'a String> for ChatRequest {
-    fn from(input: &'a String) -> Self {
-        Self::from(input.as_str())
-    }
-}
+        let response = match serde_json::from_str(&response) {
+            Ok(response) => response,
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "could not parse chat response {response}: {e}"
+                ));
+            }
+        };
 
-// From for ChatRequest with &[ChatMessage]
-impl<'a> From<&'a [Msg]> for ChatRequest {
-    fn from(input: &'a [Msg]) -> Self {
-        Self {
-            messages: input.to_vec(),
-            ..Self::default()
-        }
-    }
-}
-
-// From for [ChatMessage; N]
-impl<const N: usize> From<[Msg; N]> for ChatRequest {
-    fn from(input: [Msg; N]) -> Self {
-        Self {
-            messages: input.to_vec(),
-            ..Self::default()
-        }
+        Ok(response)
     }
 }
 
@@ -516,7 +506,7 @@ pub struct EmbeddingRequest<'a> {
 }
 
 impl<'a> EmbeddingRequest<'a> {
-    async fn send(self) -> anyhow::Result<Vec<f32>> {
+    pub async fn send(self) -> anyhow::Result<Vec<f32>> {
         let response = self
             .client
             .client
@@ -546,13 +536,6 @@ impl Default for Embedding<'static> {
 }
 
 impl Model {
-    const fn embed_repr(self) -> Option<&'static str> {
-        match self {
-            Self::Davinci | Self::Curie | Self::Babbage => None,
-            Self::Ada => Some("text-embedding-ada-002"),
-        }
-    }
-
     #[allow(unused)]
     const fn text_repr(self) -> &'static str {
         match self {
@@ -565,510 +548,11 @@ impl Model {
 }
 
 impl Client {
-    fn request(
-        &self,
-        url: &str,
-        request: &impl Serialize,
-    ) -> impl Future<Output = reqwest::Result<Response>> {
-        self.client.post(url).json(request).send()
+    pub async fn embed(&self) -> EmbeddingRequest {
+        EmbeddingRequest::new(self)
     }
 
-    /// Calls the embedding API
-    ///
-    /// - turns an `input` [`str`] into a vector
-    ///
-    /// # Errors
-    /// Returns `Err` if there is a network error communicating to `OpenAI`
-    pub async fn embed(&self, embedding: Embedding<'_>, input: &str) -> anyhow::Result<Vec<f32>> {
-        let embed: EmbedResponse = self
-            .request("https://api.openai.com/v1/embeddings", &request)
-            .await
-            .context("could not complete embed request")?
-            .json()
-            .await?;
-
-        let result = embed
-            .data
-            .into_iter()
-            .next()
-            .context("no data for embedding")?
-            .embedding;
-
-        Ok(result)
-    }
-
-    /// # Errors
-    /// Returns `Err` if there is a network error communicating to `OpenAI`
-    pub async fn raw_chat(&self, req: &ChatRequest) -> anyhow::Result<ChatResponse> {
-        let response: String = self
-            .request("https://api.openai.com/v1/chat/completions", req)
-            .await
-            .context("could not complete chat request")?
-            .text()
-            .await?;
-
-        let response = match serde_json::from_str(&response) {
-            Ok(response) => response,
-            Err(e) => {
-                return Err(anyhow::anyhow!(
-                    "could not parse chat response {response}: {e}"
-                ));
-            }
-        };
-
-        Ok(response)
-    }
-
-    /// # Errors
-    /// Returns `Err` if there is a network error communicating to `OpenAI`
-    pub async fn chat(&self, req: impl Into<ChatRequest> + Send) -> anyhow::Result<String> {
-        let req = req.into();
-        let response = self.raw_chat(&req).await?;
-        let choice = response
-            .choices
-            .into_iter()
-            .next()
-            .context("no choices for chat")?;
-
-        choice.message.content.context("no content for chat")
-    }
-
-    /// # Errors
-    /// Returns `Err` if there is a network error communicating to `OpenAI`
-    pub async fn stream_text(
-        &self,
-        req: TextRequest<'_>,
-    ) -> anyhow::Result<impl Stream<Item = anyhow::Result<String>>> {
-        #[derive(Clone, Serialize)]
-        pub struct TextStreamRequest<'a> {
-            stream: bool,
-
-            #[serde(flatten)]
-            req: TextRequest<'a>,
-        }
-
-        #[derive(Deserialize, Debug)]
-        pub struct TextStreamData {
-            pub text: Option<String>,
-        }
-
-        #[derive(Deserialize, Debug)]
-        pub struct TextStreamResponse {
-            pub choices: Vec<TextStreamData>,
-        }
-
-        let req = TextStreamRequest { stream: true, req };
-
-        let response = self
-            .request("https://api.openai.com/v1/completions", &req)
-            .await
-            .context("could not complete chat request")?;
-
-        let stream = response
-            .bytes_stream()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-            .into_async_read();
-
-        let mut messages = event_stream_processor::get_messages(stream);
-
-        let (tx, rx) = mpsc::channel(100);
-
-        fn message_to_data(
-            message: anyhow::Result<event_stream_processor::Message>,
-        ) -> anyhow::Result<Option<String>> {
-            let message = message?;
-            let data = message.data.context("no data")?;
-
-            if &data == "[DONE]" {
-                return Ok(None);
-            }
-
-            let Ok(data) = serde_json::from_str::<TextStreamResponse>(&data) else {
-                return Ok(None);
-            };
-
-            let choice = data.choices.into_iter().next().context("no choices")?;
-
-            let Some(content) = choice.text else {
-                return Ok(Some(String::new()));
-            };
-
-            Ok(Some(content))
-        }
-
-        tokio::spawn(async move {
-            while let Some(msg) = messages.next().await {
-                let msg = message_to_data(msg);
-                match msg {
-                    Ok(None) => {
-                        return;
-                    }
-                    Ok(Some(msg)) => {
-                        if tx.send(Ok(msg)).await.is_err() {
-                            return;
-                        }
-                    }
-                    Err(e) => {
-                        if tx.send(Err(e)).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-            }
-        });
-
-        Ok(ReceiverStream::from(rx))
-    }
-
-    /// # Errors
-    /// Returns `Err` if there is a network error communicating to `OpenAI`
-    pub async fn stream_chat(
-        &self,
-        req: impl Into<ChatRequest> + Send,
-    ) -> anyhow::Result<impl Stream<Item = anyhow::Result<String>>> {
-        #[derive(Serialize)]
-        struct ChatStreamRequest {
-            stream: bool,
-
-            #[serde(flatten)]
-            req: ChatRequest,
-        }
-
-        #[derive(Serialize, Deserialize, Debug, Clone)]
-        struct ChatStreamMessage {
-            pub delta: Delta,
-        }
-
-        #[derive(Serialize, Deserialize, Debug, Clone)]
-        struct ChatStreamResponse {
-            pub choices: Vec<ChatStreamMessage>,
-        }
-
-        let req = req.into();
-
-        let req = ChatStreamRequest { stream: true, req };
-
-        let response = self
-            .request("https://api.openai.com/v1/chat/completions", &req)
-            .await
-            .context("could not complete chat request")?;
-
-        let stream = response
-            .bytes_stream()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-            .into_async_read();
-
-        let mut messages = event_stream_processor::get_messages(stream);
-
-        let (tx, rx) = mpsc::channel(100);
-
-        fn message_to_data(
-            message: anyhow::Result<event_stream_processor::Message>,
-        ) -> anyhow::Result<Option<String>> {
-            let message = message?;
-            let data = message.data.context("no data")?;
-
-            if &data == "[DONE]" {
-                return Ok(None);
-            }
-
-            let Ok(data) = serde_json::from_str::<ChatStreamResponse>(&data) else {
-                return Ok(None);
-            };
-
-            let choice = data.choices.into_iter().next().context("no choices")?;
-
-            let Delta::Content(content) = choice.delta else {
-                return Ok(Some(String::new()));
-            };
-
-            Ok(Some(content))
-        }
-
-        tokio::spawn(async move {
-            while let Some(msg) = messages.next().await {
-                let msg = message_to_data(msg);
-                match msg {
-                    Ok(None) => {
-                        return;
-                    }
-                    Ok(Some(msg)) => {
-                        if tx.send(Ok(msg)).await.is_err() {
-                            return;
-                        }
-                    }
-                    Err(e) => {
-                        if tx.send(Err(e)).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-            }
-        });
-
-        Ok(ReceiverStream::from(rx))
-    }
-
-    /// # Errors
-    /// Will return `Err` if cannot properly contact `OpenAI` API.
-    pub async fn text(&self, request: TextRequest<'_>) -> anyhow::Result<Vec<String>> {
-        let text = self
-            .request("https://api.openai.com/v1/completions", &request)
-            .await
-            .context("could not complete text request")?
-            .text()
-            .await
-            .context("could not convert into text")?;
-
-        let json: TextResponse = match serde_json::from_str(&text) {
-            Ok(res) => res,
-            Err(e) => bail!("error {e} parsing json {text}"),
-        };
-
-        let choices = json.choices.into_iter().map(|e| e.text).collect();
-        Ok(choices)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use approx::relative_eq;
-    use once_cell::sync::Lazy;
-    use pretty_assertions::assert_eq;
-    use serde_json::json;
-
-    use crate::{ChatChoice, ChatModel, ChatRequest, Completions, Function, Model, Msg, Role};
-
-    static API: Lazy<crate::Client> =
-        Lazy::new(|| crate::Client::simple().expect("could not create client"));
-
-    #[tokio::test]
-    async fn test_chat_raw() {
-        let req = ChatRequest {
-            model: ChatModel::Turbo,
-            messages: vec![
-                Msg {
-                    role: Role::System,
-                    content: Some(
-                        "You are a helpful assistant that translates English to French."
-                            .to_string(),
-                    ),
-                    ..Msg::default()
-                },
-                Msg {
-                    role: Role::User,
-                    content: Some(
-                        "Translate the following English text to French: Hello".to_string(),
-                    ),
-                    ..Msg::default()
-                },
-            ],
-            ..ChatRequest::default()
-        };
-
-        let choices = API.raw_chat(&req).await.unwrap().choices;
-
-        let [ChatChoice { message }] = choices.as_slice() else {
-            panic!("no choices");
-        };
-
-        let message = message
-            // prune all non-alphanumeric characters
-            .content
-            .as_ref()
-            .unwrap()
-            .replace(|c: char| !c.is_ascii_alphanumeric(), "")
-            .to_ascii_lowercase();
-
-        assert!(message.contains("bonjour"));
-    }
-
-    #[tokio::test]
-    async fn test_chat() {
-        let request = ChatRequest {
-            model: ChatModel::Turbo,
-            messages: vec![
-                Msg {
-                    role: Role::System,
-                    content: Some(
-                        "You are a helpful assistant that translates English to French."
-                            .to_string(),
-                    ),
-                    ..Msg::default()
-                },
-                Msg {
-                    role: Role::User,
-                    content: Some(
-                        "Translate the following English text to French: Hello".to_string(),
-                    ),
-                    ..Msg::default()
-                },
-            ],
-            ..ChatRequest::default()
-        };
-
-        let res = API.chat(request).await.unwrap();
-
-        let choice = res
-            // prune all non-alphanumeric characters
-            .replace(|c: char| !c.is_ascii_alphanumeric(), "")
-            .to_ascii_lowercase();
-
-        assert!(choice.contains("bonjour"));
-    }
-
-    /// test no panic
-    #[test]
-    fn test_text_request() {
-        // test default does not panic
-        crate::TextRequest::default();
-    }
-
-    #[test]
-    fn test_message() {
-        {
-            let msg = Msg::system("hello");
-            assert_eq!("hello", format!("{msg}"));
-            let msg = serde_json::to_string(&msg).unwrap();
-            assert_eq!(msg, r#"{"role":"system","content":"hello"}"#);
-        }
-
-        {
-            let msg = Msg::user("hello");
-            assert_eq!("hello", format!("{msg}"));
-            let msg = serde_json::to_string(&msg).unwrap();
-            assert_eq!(msg, r#"{"role":"user","content":"hello"}"#);
-        }
-
-        {
-            let msg = Msg::assistant("hello");
-            assert_eq!("hello", format!("{msg}"));
-            let msg = serde_json::to_string(&msg).unwrap();
-            assert_eq!(msg, r#"{"role":"assistant","content":"hello"}"#);
-        }
-    }
-
-    #[test]
-    fn test_chat_builder() {
-        let req = ChatRequest::default()
-            .model(ChatModel::Turbo)
-            .temperature(1.2)
-            .message(Msg::system("hello"))
-            .message(Msg::user("hello"))
-            .top_p(1.0)
-            .n(3)
-            .stop_at("\n")
-            .stop_at("#####");
-
-        assert_eq!(req.model, ChatModel::Turbo);
-        assert!(relative_eq!(req.temperature, 1.2));
-        assert_eq!(req.messages.len(), 2);
-        assert!(relative_eq!(req.top_p, 1.0));
-        assert_eq!(req.n, 3);
-        assert_eq!(req.stop_at, vec!["\n", "#####"]);
-    }
-
-    #[test]
-    fn test_chat_from() {
-        let req = ChatRequest::from("hello");
-        assert_eq!(req.messages.len(), 1);
-        assert_eq!(req.messages[0].content, Some("hello".to_string()));
-        assert_eq!(req.messages[0].role, Role::User);
-        assert_eq!(req.n, 1);
-
-        let req = ChatRequest::from(&"hello".to_string());
-        assert_eq!(req.messages.len(), 1);
-        assert_eq!(req.messages[0].content, Some("hello".to_string()));
-        assert_eq!(req.messages[0].role, Role::User);
-        assert_eq!(req.n, 1);
-
-        let messages = [Msg::user("hello"), Msg::assistant("world")];
-        let req = ChatRequest::from(messages.as_slice());
-        assert_eq!(req.messages.len(), 2);
-        assert_eq!(req.messages[0].content, Some("hello".to_string()));
-        assert_eq!(req.messages[0].role, Role::User);
-        assert_eq!(req.messages[1].content, Some("world".to_string()));
-        assert_eq!(req.messages[1].role, Role::Assistant);
-        assert_eq!(req.n, 1);
-
-        let messages = [Msg::user("hello"), Msg::assistant("world")];
-        let req = ChatRequest::from(messages);
-        assert_eq!(req.messages.len(), 2);
-        assert_eq!(req.messages[0].content, Some("hello".to_string()));
-        assert_eq!(req.messages[0].role, Role::User);
-        assert_eq!(req.messages[1].content, Some("world".to_string()));
-        assert_eq!(req.messages[1].role, Role::Assistant);
-        assert_eq!(req.n, 1);
-    }
-
-    #[test]
-    fn test_completions() {
-        let completion = Completions::default();
-        assert_eq!(completion, Completions::Davinci);
-    }
-
-    #[test]
-    fn test_chat_model() {
-        let model = ChatModel::default();
-        assert_eq!(model, ChatModel::Gpt4);
-    }
-
-    #[test]
-    fn test_model() {
-        let model = Model::default();
-        assert_eq!(model, Model::Davinci);
-        assert_eq!(model.embed_repr(), None);
-        assert_eq!(model.text_repr(), "text-davinci-003");
-
-        let model = Model::Curie;
-        assert_eq!(model.embed_repr(), None);
-        assert_eq!(model.text_repr(), "text-curie-001");
-
-        let model = Model::Babbage;
-        assert_eq!(model.embed_repr(), None);
-        assert_eq!(model.text_repr(), "text-babbage-001");
-
-        let model = Model::Ada;
-        assert_eq!(model.embed_repr().unwrap(), "text-embedding-ada-002");
-        assert_eq!(model.text_repr(), "text-ada-001");
-    }
-
-    #[tokio::test]
-    async fn test_function() {
-        let request = ChatRequest::new();
-
-        let function = Function {
-            name: "weather".to_string(),
-            description: Some("Get the weather for a location".to_string()),
-            parameters: Some(json!({
-                "type": "object",
-                "properties": {
-                        "lat": {
-                            "type": "number",
-                        },
-                        "lon": {
-                            "type": "number",
-                        },
-                        "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]},
-                    },
-                    "required": ["lat", "lon"],
-            })),
-        };
-
-        let request = request
-            .function(function)
-            .user_msg("What's the weather like in Svalbard");
-
-        println!("{}", serde_json::to_string_pretty(&request).unwrap());
-
-        let response = API.raw_chat(&request).await.unwrap();
-
-        let first_choice = response.choices.into_iter().next().unwrap();
-
-        let msg = first_choice.message;
-
-        let call = serde_json::to_string_pretty(&msg.function_call).unwrap();
-
-        println!("call: {}", call);
+    pub async fn chat(&self) -> ChatRequest {
+        ChatRequest::new(self)
     }
 }
