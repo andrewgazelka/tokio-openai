@@ -506,6 +506,16 @@ pub struct EmbeddingRequest<'a> {
     model: Embedding<'a>,
 }
 
+#[derive(Serialize, Build)]
+pub struct EmbeddingsRequest<'a> {
+    #[required]
+    #[serde(skip)]
+    client: &'a Client,
+
+    input: Vec<&'a str>,
+    model: Embedding<'a>,
+}
+
 impl<'a> EmbeddingRequest<'a> {
     pub async fn send(self) -> anyhow::Result<Vec<f32>> {
         let response = self
@@ -520,6 +530,25 @@ impl<'a> EmbeddingRequest<'a> {
         let embed: EmbedResponse = response.json().await?;
 
         let result = embed.into_embedding();
+
+        Ok(result)
+    }
+}
+
+impl<'a> EmbeddingsRequest<'a> {
+    pub async fn send(self) -> anyhow::Result<Vec<Vec<f32>>> {
+        let response = self
+            .client
+            .client
+            .post("https://api.openai.com/v1/embeddings")
+            .json(&self)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let embed: EmbedResponse = response.json().await?;
+
+        let result = embed.data.into_iter().map(|e| e.embedding).collect();
 
         Ok(result)
     }
@@ -549,18 +578,22 @@ impl Model {
 }
 
 impl Client {
-    pub fn embed(&self) -> EmbeddingRequest {
+    pub fn embedding(&self) -> EmbeddingRequest {
         EmbeddingRequest::new(self)
+    }
+
+    pub fn embeddings(&self) -> EmbeddingsRequest {
+        EmbeddingsRequest::new(self)
     }
 
     pub fn chat(&self) -> ChatRequest {
         ChatRequest::new(self)
     }
-    
+
     pub fn chat_gpt4(&self) -> ChatRequest {
         ChatRequest::new(self).model(ChatModel::Gpt4TurboPreview)
     }
-    
+
     pub fn chat_gpt3(&self) -> ChatRequest {
         ChatRequest::new(self).model(ChatModel::Turbo)
     }
