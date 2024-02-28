@@ -556,4 +556,12 @@ impl Client {
     pub fn chat(&self) -> ChatRequest {
         ChatRequest::new(self)
     }
+    
+    pub fn chat_gpt4(&self) -> ChatRequest {
+        ChatRequest::new(self).model(ChatModel::Gpt4TurboPreview)
+    }
+    
+    pub fn chat_gpt3(&self) -> ChatRequest {
+        ChatRequest::new(self).model(ChatModel::Turbo)
+    }
 }
