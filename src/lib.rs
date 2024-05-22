@@ -196,8 +196,11 @@ pub enum Model {
 
 #[derive(Serialize, Deserialize, Default, Debug, PartialEq, Eq, Copy, Clone)]
 pub enum ChatModel {
-    #[serde(rename = "gpt-4-turbo-preview")]
+    #[serde(rename = "gpt-4o")]
     #[default]
+    Gpt4o,
+
+    #[serde(rename = "gpt-4-turbo-preview")]
     Gpt4TurboPreview,
 
     #[serde(rename = "gpt-4-1106-preview")]
